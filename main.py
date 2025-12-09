@@ -7,62 +7,15 @@ from typing import Any, Dict, Optional, List, Tuple
 import requests
 from pypdf import PdfReader
 from langchain_ollama import ChatOllama
-from pydantic import BaseModel, Field
-
-
-# ---------- Pydantic-Modelle für strukturierten Output ----------
-
-class Invoice(BaseModel):
-    amount: float = Field(..., description="Betrag einer Invoice")
-
-
-class Summary(BaseModel):
-    total: float = Field(..., description="Gesamtbetrag Summary")
-    allowances: float = Field(..., description="Allowances Summary")
-    transportation_total: float = Field(..., description="Transportkosten Summary")
-    accommodation_total: float = Field(
-        ...,
-        description="Unterkunftskosten Summary",
-    )
-    time_period_summary: Optional[str] = Field(
-        None, description="Zeile aus der Summary, die die Zeitspanne enthält"
-    )
-
-
-class ExpenseReport(BaseModel):
-    destination: Optional[str] = Field(
-        None, description="Destination aus dem Header"
-    )
-    time_period_header: Optional[str] = Field(
-        None, description=" Time-Period-Zeile aus dem Header"
-    )
-    ticket_id: Optional[str] = Field(
-        None, description="Ticket-ID aus dem Header"
-    )
-    invoices: List[Invoice] = Field(
-        default_factory=list, description="Liste der einzelnen Beträge"
-    )
-    summary: Summary
-
-
-class RateSelection(BaseModel):
-    matched_city: Optional[str] = Field(
-        None, description="Name der gematchten Stadt"
-    )
-    daily_rate: Optional[float] = Field(
-        None, description="Tagesatz für die Stadt"
-    )
-
-
-class AllowanceCalculation(BaseModel):
-    days: int
-    expected_allowance: float
-    matches_summary: bool
-
-
-class ApprovalDecision(BaseModel):
-    approve: bool = Field(..., description="Ob der Report freigegeben werden soll")
-    comment: str = Field(..., description="Kommentar zur Entscheidung")
+from config.settings import BASE_URL, USERNAME, PASSWORD, OLLAMA_MODEL
+from models.expense import (
+    AllowanceCalculation,
+    ApprovalDecision,
+    ExpenseReport,
+    Invoice,
+    RateSelection,
+    Summary,
+)
 
 
 # ---------- STEP 1: PDF → Header / Invoices / Summary ----------
@@ -166,7 +119,7 @@ def get_llm() -> ChatOllama:
     Das `format="json"` hilft, dass das Modell gültiges JSON ausspuckt.
     """
     return ChatOllama(
-        model="llama3.2",
+        model=OLLAMA_MODEL,
         temperature=0.0,
         format="json",
     )
@@ -193,10 +146,6 @@ def analyze_expenses_with_llm(
 
 
 # ---------- STEP 4: Backend-API Helper ----------
-
-BASE_URL = "https://agents-workshop-backend.cfapps.eu10-004.hana.ondemand.com"
-USERNAME = "agentsworkshopbackend"
-PASSWORD = "bowseS-caqne6-satmus"
 
 AUTH = (USERNAME, PASSWORD)
 

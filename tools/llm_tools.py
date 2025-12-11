@@ -7,110 +7,199 @@ from config.settings import OLLAMA_MODEL
 from models.expense import (
     AllowanceCalculation,
     ApprovalDecision,
-    ExpenseReport,
     RateSelection,
+    HeaderExtraction,
+    InvoicesExtraction,
+    SummaryExtraction,
+    DateComparsion
 )
 
+# LLM Instanz zum weiterverwenden in diesem Modul
+_LLM: ChatOllama | None = None
 
 def get_llm() -> ChatOllama:
     """
     Erzeugt eine ChatOllama-Instanz, die für JSON/structured output taugt.
     Das `format="json"` hilft, dass das Modell gültiges JSON ausspuckt.
     """
-    return ChatOllama(
-        model=OLLAMA_MODEL,
-        temperature=0.0,
-        format="json",
-    )
+    global _LLM
+    if _LLM is None:
+        _LLM = ChatOllama(
+            model=OLLAMA_MODEL,
+            temperature=0.0,
+        )
+    return _LLM
 
+# -------------------------------------------
+# 1) HEADER mit LLM extrahieren
+# -------------------------------------------
 
-def build_prompt(header_text: str, invoices_text: str, summary_text: str) -> str:
-    return f"""
-Lies die folgenden drei Textbereiche (HEADER, INVOICES, SUMMARY)
-und extrahiere daraus ein JSON-Objekt mit GENAU der folgenden Struktur:
+def extract_header_with_llm(header_text: str) -> HeaderExtraction:
+    llm = get_llm()
+    print("\n-------headertext-------")
+    print(header_text)
+    prompt = f"""
+    Lies den folgenden HEADER-Text und extrahiere exakt diese Felder:
 
-{{
-  "destination": "string oder null",
-  "time_period_header": "string oder null",
-  "ticket_id": "string oder null",
-  "invoices": [
+    - destination: Reiseziel / Adresse / Firma.
+    - ticket_id: TicketID.
+    - time_period_header: Das Datum oder die Zeitspanne.
+
+    Gib AUSSCHLIESSLICH ein JSON im folgenden Format zurück:
+
     {{
-      "amount": 0.00
+    "destination": "string oder null",
+    "time_period_header": "string oder null",
+    "ticket_id": "string oder null"
     }}
-  ],
-  "summary": {{
-    "total": 0.00,
-    "allowances": 0.00,
-    "transportation_total": 0.00,
-    "accommodation_total": 0.00,
-    "time_period_summary": "string oder null"
-  }}
-}}
 
-Wichtige Regeln:
-- Gib AUSSCHLIESSLICH ein JSON in genau dieser Struktur zurück, keine Erklärungen.
-- Wenn eine Information nicht gefunden wird → null (Strings) oder 0.0 (Zahlen).
-- Zahlen ohne Währungssymbole oder Kommas, z.B. "1,121.00 USD" → 1121.00.
+    Beispiel zur Orientierung:
 
----------------- HEADER ----------------
-Extrahiere NUR aus dem HEADER:
-- destination
-- ticket_id
-- time_period_header → die komplette Zeile, in der die Time Period im Header steht.
+    HEADER_TEXT_BEISPIEL:
+    "2024-03-12   Maria Henderson (Employee 7721) Department: 445200 Destination: Microsoft HQ, One Microsoft Way, Redmond, WA Time Period: 2024-03-01 – 2024-03-05 Ticket ID: 992211"
 
-HEADER_TEXT:
-{header_text}
-Ende HEADER_Text
+    Beispiel-Antwort:
+    {{
+    "destination": "Microsoft HQ, One Microsoft Way, Redmond, WA",
+    "time_period_header": "2024-03-01 – 2024-03-05",
+    "ticket_id": "992211"
+    }}
 
----------------- INVOICES ----------------
-Extrahiere NUR aus dem INVOICES-Text:
+    Jetzt verarbeite diesen HEADER:
 
-- ALLE Beträge der Form 000.00 
-- JEDER gefundene Betrag erzeugt genau ein Objekt im Array "invoices".
-- WICHTIG: Verwende AUSSCHLIESSLICH Beträge aus diesem Abschnitt.
-  NIEMALS Werte aus der SUMMARY oder anderen Bereichen.
-- Wenn keine Beträge im INVOICES-Text enthalten sind, gib eine leere Liste zurück.
-
-INVOICES_TEXT:
-{invoices_text}
-Ende INVOICES_TEXT
-
----------------- SUMMARY ----------------
-Extrahiere NUR aus dem SUMMARY-Text:
-- summary.total
-- summary.allowances
-- summary.transportation_total
-- summary.accommodation_total
-- time_period_summary → die komplette Zeile, die die Summary-Zeitspanne enthält.
-
-SUMMARY_TEXT:
-{summary_text}
-Ende SUMMARY_TEXT
-"""
+    HEADER_TEXT:
+    {header_text}
+    """
 
 
-def analyze_expenses_with_llm(
-    header_text: str,
-    invoices_text: str,
-    summary_text: str,
-    llm: Optional[ChatOllama] = None,
-) -> ExpenseReport:
-    if llm is None:
-        llm = get_llm()
-
-    prompt = build_prompt(header_text, invoices_text, summary_text)
-    structured_llm = llm.with_structured_output(ExpenseReport)
+    structured_llm = llm.with_structured_output(HeaderExtraction)
 
     start = time.time()
-    result: ExpenseReport = structured_llm.invoke(prompt)
+    result: HeaderExtraction = structured_llm.invoke(prompt)
     end = time.time()
-    print(f"⏱ LLM-Antwortzeit (Extraktion): {end - start:.2f} Sekunden")
+    print(f"⏱ LLM-Antwortzeit (HEADER): {end - start:.2f} Sekunden")
+
+    return result
+
+
+# -------------------------------------------
+# 2) INVOICES mit LLM extrahieren
+# -------------------------------------------
+
+def extract_invoices_with_llm(invoices_text: str) -> InvoicesExtraction:
+    llm = get_llm()
+    print("\n-------invoicestext-------")
+    print(invoices_text)
+    prompt = f"""
+    Lies den folgenden INVOICES-Text und extrahiere eine Liste von Einträgen.
+
+    Extraktion:
+    - date = das erste erkannte Datum im Format YYYY-MM-DD vor dem Betrag.
+    - amount = der Betrag (000.00), der zu diesem Eintrag gehört.
+    - Jeder Betrag erzeugt genau ein Objekt im Array.
+
+    Gib ausschließlich folgendes JSON zurück:
+
+    {{
+    "invoices": [
+        {{
+        "date": "string oder null",
+        "amount": 0.00
+        }}
+    ]
+    }}
+
+    Beispiel Input:
+    "Invoices Date Type Details Amount (USD) 2024-05-02 Transport Taxi 42.50 2024-05-03 Other Lunch 18.20 2024-05-05 – 2024-05-07 Accommodation Hotel 420.00 2024-05-08 Transport Train 67.00"
+
+    Beispiel-Antwort:
+    {{
+    "invoices": [
+        {{ "date": "2024-05-02", "amount": 42.50 }},
+        {{ "date": "2024-05-03", "amount": 18.20 }},
+        {{ "date": "2024-05-05 – 2024-05-07", "amount": 420.00 }},
+        {{ "date": "2024-05-08", "amount": 67.00 }}
+    ]
+    }}
+
+    Hier der echte Text:
+
+    INVOICES_TEXT:
+    {invoices_text}
+    """
+
+
+    structured_llm = llm.with_structured_output(InvoicesExtraction)
+
+    start = time.time()
+    result: InvoicesExtraction = structured_llm.invoke(prompt)
+    end = time.time()
+    print(f"⏱ LLM-Antwortzeit (INVOICES): {end - start:.2f} Sekunden")
+
+    return result
+
+
+# -------------------------------------------
+# 3) SUMMARY mit LLM extrahieren
+# -------------------------------------------
+
+def extract_summary_with_llm(summary_text: str) -> SummaryExtraction:
+    llm = get_llm()
+    print("\n-------summarytext-------")
+    print(summary_text)
+    prompt = f"""
+    Lies den folgenden Text und extrahiere:
+
+    - allowance Ist der Wert nachdem Wort allowance
+    - transportation_total Ist der Wert nachdem Wort transportation Total
+    - accommodation_total Ist der Wert nachdem Wort accommodation Total
+    - time_period_summary: der Textteil mit "Time Period" und der Datums-Range.
+    - total Ist der Wert nachdem Wort Total
+
+    Regeln:
+    - Beträge wie "1,121.00 USD" → 1121.00
+    - Wenn ein Wert fehlt: Zahlen = 0.0, Strings = null
+
+    Gib ausschließlich dieses JSON zurück:
+
+    {{
+        "allowance": 0.00,
+        "transportation_total": 0.00,
+        "accommodation_total": 0.00,
+        "time_period_summary": "string oder null",
+        "total": 0.00,
+    }}
+
+    Beispiel SUMMARY_TEXT:
+    "Summary Time Period 2024-04-01 – 2024-04-03 Allowances 15.00 USD Transportation Details 300.00 USD Accommodation 450.00 USD TOTAL 765.00 USD"
+
+    Beispiel-Antwort:
+    {{
+        "allowance": 15.00,
+        "transportation_total": 300.00,
+        "accommodation_total": 450.00,
+        "time_period_summary": "2024-04-01 – 2024-04-03"
+        "total": 765.00,
+    }}
+
+    Hier der echte Text:
+
+    SUMMARY_TEXT:
+    {summary_text}
+    """
+
+
+    structured_llm = llm.with_structured_output(SummaryExtraction)
+
+    start = time.time()
+    result: SummaryExtraction = structured_llm.invoke(prompt)
+    end = time.time()
+    print(f"⏱ LLM-Antwortzeit (SUMMARY): {end - start:.2f} Sekunden")
 
     return result
 
 
 def select_daily_rate_with_llm(
-    llm: ChatOllama,
     destination: Optional[str],
     allowances: Dict[str, float],
 ) -> RateSelection:
@@ -118,6 +207,7 @@ def select_daily_rate_with_llm(
     Wählt anhand der Destination eine passende Stadt und Rate aus dem allowances-Mapping.
     Gibt ein RateSelection-Objekt zurück.
     """
+    llm = get_llm()
     prompt = f"""
     Du bekommst eine Destination als String und ein Mapping von Städten zu Tagesätzen (Allowances).
 
@@ -141,9 +231,7 @@ def select_daily_rate_with_llm(
 
     return result
 
-
 def calculate_allowance_with_llm(
-    llm: ChatOllama,
     time_period_summary: Optional[str],
     daily_rate: Optional[float],
     extracted_allowance: Optional[float],
@@ -183,37 +271,42 @@ def calculate_allowance_with_llm(
 
 
 def build_approval_decision_with_llm(
-    llm: ChatOllama,
-    expense: ExpenseReport,
     total_ok: bool,
     ticket_exists: bool,
     allowance_calc: AllowanceCalculation,
+    dates_ok: bool,   
 ) -> ApprovalDecision:
     """
-    Kurzer Prompt: nur Booleans und Ergebnisentscheidung.
+    Lässt das LLM anhand vierer bools entscheiden, ob ein Report approved oder rejected wird.
     """
-    prompt = f"""
-    Du bist ein Sachbearbeiter für Reisekostenabrechnungen und du musst anhand der folgenden
-    Werte entscheiden ob die Reisenkostenabrechnung approved oeder rejected werden soll.
-    Anschließend schreibst du einen kurzen Kommentar warum so entschieden wurde.
+    llm = get_llm()
 
-    Gesamtkosten wurden richtig berechnet: {total_ok}
-    Das Ticket existiert im System: {ticket_exists}
-    Die Allowance wurde korrekt berechnet: {allowance_calc.matches_summary}
+    prompt = f"""
+    Du bist ein Sachbearbeiter für Reisekostenabrechnungen und musst anhand der folgenden
+    Werte entscheiden, ob die Reisekostenabrechnung approved oder rejected wird.
+    Anschließend schreibst du einen kurzen Kommentar, warum so entschieden wurde.
+
+    Werte:
+    - Gesamtkosten korrekt berechnet: {total_ok}
+    - Ticket existiert im System: {ticket_exists}
+    - Allowance korrekt berechnet: {allowance_calc.matches_summary}
+    - Datumsabgleich korrekt (Header vs Summary): {dates_ok}
 
     Regeln:
-    - Wenn ein Wert False -> approve = false
-    - Wenn alle Werte True -> approve = true
-    - Kommentar: max. 2 kurze Sätze, kurz begründen.
+    - Wenn EIN Wert False ist -> approve = false
+    - Nur wenn ALLE Werte True sind -> approve = true
+    - Kommentar: maximal 2 kurze Sätze, klare Begründung.
 
     Antworte NUR mit JSON: {{"approve": true/false, "comment": "string"}}
     """
 
     structured_llm = llm.with_structured_output(ApprovalDecision)
+
     start = time.time()
     decision: ApprovalDecision = structured_llm.invoke(prompt)
     end = time.time()
     print(f"⏱ LLM-Antwortzeit (ApprovalDecision): {end - start:.2f} Sekunden")
 
     return decision
+
 

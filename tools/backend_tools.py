@@ -60,15 +60,21 @@ def get_allowances() -> Dict[str, float]:
 
 
 def check_ticket_exists(
-    expense_report: Dict[str, Any],
+    ticket_id: str,
 ) -> Tuple[bool, Optional[Dict[str, Any]]]:
     """
     Prüft, ob das Ticket im Backend existiert und gibt (exists, ticket_data) zurück.
     Fehler werden kurz ausgegeben (print).
+
+    INPUT:
+        ticket_id (str): Ticket-ID, die im Backend geprüft werden soll.
+
+    OUTPUT:
+        exists (bool): True, wenn Ticket existiert.
+        ticket_data (dict | None): JSON-Daten des Tickets, falls vorhanden.
     """
     exists = False
     ticket_data = None
-    ticket_id = expense_report.get("ticket_id")
 
     if not ticket_id:
         print("No ticket_id in expense report; cannot verify ticket in backend.")

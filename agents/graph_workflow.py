@@ -1,0 +1,305 @@
+from __future__ import annotations
+
+from pathlib import Path
+from typing import TypedDict, Optional, Dict
+
+from langgraph.graph import StateGraph, START, END
+
+from tools.pdf_tools import extract_sections_from_pdf
+from tools.llm_tools import extract_header_with_llm, extract_invoices_with_llm, extract_summary_with_llm, select_daily_rate_with_llm, build_approval_decision_with_llm
+from tools.backend_tools import get_allowances, check_ticket_exists, update_ticket_status
+from tools.checks import check_total, compare_time_periods_with_llm, calculate_allowance
+from models.expense import PdfSections, HeaderExtraction, InvoicesExtraction, SummaryExtraction, RateSelection, DateComparsion, AllowanceCalculation, ApprovalDecision
+from langgraph.graph import draw
+class GraphState(TypedDict, total=False):
+    """
+    State:
+    - pdf_path: Input
+    - pdf_sections: Output des PDF-Tools (Header/Invoices/Summary-Text)
+    - header_extraction: strukturierte Header-Daten aus dem LLM
+    """
+    pdf_path: Path
+    pdf_sections: PdfSections
+    header_extraction: HeaderExtraction
+    invoices_extraction: InvoicesExtraction
+    summary_extraction: SummaryExtraction
+    allowances: dict
+    total_ok: bool
+    ticket_exists: bool
+    allowance_calculation: AllowanceCalculation
+    ticket_data: Optional[Dict]
+    rate_selection: RateSelection
+    date_comparsion: DateComparsion
+    approval_decision: ApprovalDecision
+
+
+def extract_pdf_node(state: GraphState) -> GraphState:
+    """
+    Node 1:
+    - nimmt pdf_path aus dem State
+    - ruft dein vorhandenes PDF-Tool auf
+    - schreibt die drei Text-Blöcke zurück in den State
+    """
+    pdf_path = state["pdf_path"]
+    header_text, invoices_text, summary_text = extract_sections_from_pdf(pdf_path)
+
+    sections = PdfSections(
+        header=header_text,
+        invoices=invoices_text,
+        summary=summary_text,
+    )
+
+    return {   
+        "pdf_sections": sections
+    }
+
+def extract_data_node(state: GraphState) -> GraphState:
+    """
+    Node 2:
+    - Nimmt den Header-Text aus pdf_sections im State
+    - Ruft das LLM auf, um destination, time_period_header und ticket_id zu extrahieren
+    - Schreibt das Ergebnis als HeaderExtraction in den State
+    """
+    pdf_sections = state["pdf_sections"]
+    header_text = pdf_sections.header
+    invoices_text = pdf_sections.invoices
+    summary_text = pdf_sections.summary
+
+    header_result: HeaderExtraction = extract_header_with_llm(header_text)
+    invoices_result: InvoicesExtraction = extract_invoices_with_llm(invoices_text)
+    summary_result: SummaryExtraction = extract_summary_with_llm(summary_text)
+
+    return {
+        "header_extraction": header_result,
+        "invoices_extraction": invoices_result,
+        "summary_extraction": summary_result
+    }
+
+def get_allowances_node(state: GraphState) -> GraphState:
+    allowances = get_allowances()
+
+    return {
+        "allowances": allowances
+    }
+
+def check_ticket_exists_node(state: GraphState) -> GraphState:
+    ticket_id = state["header_extraction"].ticket_id
+    ticket_exists, ticket_data = check_ticket_exists(ticket_id)
+    return {
+        "ticket_exists": ticket_exists,
+        "ticket_data": ticket_data
+    }
+
+def check_total_node(state: GraphState) -> GraphState:
+    invoices_extraction = state.get("invoices_extraction")
+    summary_extraction = state.get("summary_extraction")
+
+    if invoices_extraction is None or summary_extraction is None:
+        return {}  
+
+    total_ok = check_total(
+        invoices_extraction,
+        summary_extraction,
+    )
+
+    return {
+        "total_ok": total_ok
+    }
+
+def select_daily_rate_node(state: GraphState) -> GraphState:
+    """
+    Node:
+    - Liest destination aus header_extraction
+    - Liest allowances aus dem State
+    - Ruft select_daily_rate_with_llm auf
+    - Schreibt rate_selection in den State
+    """
+    header_extraction = state.get("header_extraction")
+    allowances = state.get("allowances")
+
+    # Noch nicht ready? -> Nichts tun
+    if header_extraction is None or allowances is None:
+        return {}
+
+    destination = header_extraction.destination  # kann None sein, ist okay
+    rate_selection: RateSelection = select_daily_rate_with_llm(
+        destination=destination,
+        allowances=allowances,
+    )
+
+    return {
+        "rate_selection": rate_selection,
+    }
+
+def compare_dates_node(state: GraphState) -> GraphState:
+    """
+    Vergleicht die Zeiträume aus Header und Summary
+    und schreibt ein DateComparsion-Objekt in den State.
+    """
+    header_extraction = state.get("header_extraction")
+    summary_extraction = state.get("summary_extraction")
+
+    # Guard: läuft erst, wenn beide vorhanden sind
+    if header_extraction is None or summary_extraction is None:
+        return {}
+
+    header_time_period = header_extraction.time_period_header
+    summary_time_period = summary_extraction.time_period_summary
+
+    date_comparsion: DateComparsion = compare_time_periods_with_llm(
+        header_time_period=header_time_period,
+        summary_time_period=summary_time_period,
+    )
+
+    return {
+        "date_comparsion": date_comparsion,
+    }
+
+
+def allowance_check_node(state: GraphState) -> GraphState:
+    date_comparsion = state.get("date_comparsion")
+    rate_selection = state.get("rate_selection")
+    summary_extraction = state.get("summary_extraction")
+    
+    # Guard: Node nur „wirklich“ ausführen, wenn ALLES da ist
+    if date_comparsion is None or rate_selection is None or summary_extraction is None:
+        # Nichts ändern, nur State durchreichen
+        return state
+
+    daily_rate = rate_selection.daily_rate
+    allowance_summary = summary_extraction.allowance  # Feldname aus SummaryExtraction
+
+    result = calculate_allowance(date_comparsion, daily_rate, allowance_summary)
+
+    return {
+        "allowance_calculation": result
+    }
+
+def approval_decision_node(state: GraphState) -> GraphState:
+    total_ok = state.get("total_ok")
+    ticket_exists = state.get("ticket_exists")
+    allowance_calc = state.get("allowance_calculation")
+    date_comparsion = state.get("date_comparsion")
+
+    # Guard: nur ausführen, wenn alles da ist
+    if total_ok is None or ticket_exists is None or allowance_calc is None or date_comparsion is None:
+        return state
+    
+    dates_ok = date_comparsion.periods_match
+
+    decision = build_approval_decision_with_llm(
+        total_ok=total_ok,
+        ticket_exists=ticket_exists,
+        allowance_calc=allowance_calc,
+        dates_ok=dates_ok,
+    )
+
+    return {
+        "approval_decision": decision,
+    }
+
+def update_ticket_status_node(state: GraphState) -> GraphState:
+    print("\n🔥 [update_ticket_status_node] Aufgerufen!")
+    print("State Keys:", list(state.keys()))
+
+    ticket_data = state.get("ticket_data")
+    decision = state.get("approval_decision")
+    header = state.get("header_extraction")
+
+    # ticket_id erst NACHDEM wir header geladen haben holen
+    ticket_id = header.ticket_id if header else None
+
+    print("  ➜ ticket_id:", ticket_id)
+    print("  ➜ decision:", decision)
+    print("  ➜ ticket_data:", ticket_data)
+
+    # Guard prüfen
+    missing = []
+    if ticket_id is None:
+        missing.append("ticket_id")
+    if decision is None:
+        missing.append("approval_decision")
+    if ticket_data is None:
+        missing.append("ticket_data")
+
+    if missing:
+        print(f"⛔ Guard aktiv – folgende Werte fehlen noch: {missing}")
+        print("⛔ update_ticket_status_node beendet – State unverändert.")
+        return state
+
+    print("✅ Alle Werte vorhanden – führe Backend-Update aus...")
+
+    update_ticket_status(
+        ticket_id=ticket_id,
+        decision=decision,
+        ticket_data=ticket_data,
+    )
+
+    print(f"🎉 Ticket {ticket_id} erfolgreich im Backend aktualisiert.")
+    return state
+
+
+
+
+
+def build_app():
+    """
+    Baut den LangGraph-Workflow:
+    - ein Node: extract_pdf
+    - danach direkt END
+    """
+    graph = StateGraph(GraphState)
+
+    graph.add_node("extract_pdf", extract_pdf_node)
+    graph.add_node("extract_data", extract_data_node)
+    graph.add_node("get_allowances", get_allowances_node)
+    graph.add_node("check_ticket_exists", check_ticket_exists_node)
+    graph.add_node("check_total", check_total_node)
+    graph.add_node("select_daily_rate", select_daily_rate_node)
+    graph.add_node("compare_dates", compare_dates_node)
+    graph.add_node("allowance_check", allowance_check_node)
+    graph.add_node("approval_decision", approval_decision_node)
+    graph.add_node("update_ticket_status", update_ticket_status_node)
+
+    # Start: zwei Äste parallel
+    graph.add_edge(START, "extract_pdf")
+    graph.add_edge(START, "get_allowances")
+
+    # PDF-Flow
+    graph.add_edge("extract_pdf", "extract_data")
+
+    # Checks, die nur die Extraktion brauchen
+    graph.add_edge("extract_data", "check_ticket_exists")
+    graph.add_edge("extract_data", "check_total")
+
+    # select_daily_rate braucht BEIDES:
+    # - destination aus header_extraction (kommt aus extract_data)
+    # - allowances aus get_allowances
+    graph.add_edge("extract_data", "select_daily_rate")
+    graph.add_edge("extract_data", "compare_dates")
+    graph.add_edge("get_allowances", "select_daily_rate")
+
+    graph.add_edge("compare_dates", "allowance_check")
+    graph.add_edge("select_daily_rate", "allowance_check")
+    # vorläufige Enden
+    graph.add_edge("check_ticket_exists", "approval_decision")
+    graph.add_edge("check_total", "approval_decision")
+    graph.add_edge("allowance_check", "approval_decision")
+    graph.add_edge("approval_decision", "update_ticket_status")
+    graph.add_edge("update_ticket_status", END)
+
+    return graph.compile()
+
+
+
+def run_workflow(pdf_path: Path) -> None:
+    app = build_app()
+
+    initial_state: GraphState = {
+        "pdf_path": pdf_path,
+    }
+
+    final_state: GraphState = app.invoke(initial_state)
+
+    print("=== Finaler GraphState ===")
+    print("pdf_path:", final_state)

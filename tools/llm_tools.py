@@ -10,7 +10,8 @@ from models.expense import (
     RateSelection,
     HeaderExtraction,
     InvoicesExtraction,
-    SummaryExtraction
+    SummaryExtraction,
+    DateComparsion
 )
 
 # LLM Instanz zum weiterverwenden in diesem Modul
@@ -149,7 +150,7 @@ def extract_summary_with_llm(summary_text: str) -> SummaryExtraction:
     prompt = f"""
     Lies den folgenden Text und extrahiere:
 
-    - allowances Ist der Wert nachdem Wort allowances
+    - allowance Ist der Wert nachdem Wort allowance
     - transportation_total Ist der Wert nachdem Wort transportation Total
     - accommodation_total Ist der Wert nachdem Wort accommodation Total
     - time_period_summary: der Textteil mit "Time Period" und der Datums-Range.
@@ -162,7 +163,7 @@ def extract_summary_with_llm(summary_text: str) -> SummaryExtraction:
     Gib ausschließlich dieses JSON zurück:
 
     {{
-        "allowances": 0.00,
+        "allowance": 0.00,
         "transportation_total": 0.00,
         "accommodation_total": 0.00,
         "time_period_summary": "string oder null",
@@ -174,7 +175,7 @@ def extract_summary_with_llm(summary_text: str) -> SummaryExtraction:
 
     Beispiel-Antwort:
     {{
-        "allowances": 15.00,
+        "allowance": 15.00,
         "transportation_total": 300.00,
         "accommodation_total": 450.00,
         "time_period_summary": "2024-04-01 – 2024-04-03"
@@ -230,9 +231,7 @@ def select_daily_rate_with_llm(
 
     return result
 
-
 def calculate_allowance_with_llm(
-    llm: ChatOllama,
     time_period_summary: Optional[str],
     daily_rate: Optional[float],
     extracted_allowance: Optional[float],
@@ -272,36 +271,42 @@ def calculate_allowance_with_llm(
 
 
 def build_approval_decision_with_llm(
-    llm: ChatOllama,
     total_ok: bool,
     ticket_exists: bool,
     allowance_calc: AllowanceCalculation,
+    dates_ok: bool,   
 ) -> ApprovalDecision:
     """
-    Kurzer Prompt: nur Booleans und Ergebnisentscheidung.
+    Lässt das LLM anhand vierer bools entscheiden, ob ein Report approved oder rejected wird.
     """
-    prompt = f"""
-    Du bist ein Sachbearbeiter für Reisekostenabrechnungen und du musst anhand der folgenden
-    Werte entscheiden ob die Reisenkostenabrechnung approved oeder rejected werden soll.
-    Anschließend schreibst du einen kurzen Kommentar warum so entschieden wurde.
+    llm = get_llm()
 
-    Gesamtkosten wurden richtig berechnet: {total_ok}
-    Das Ticket existiert im System: {ticket_exists}
-    Die Allowance wurde korrekt berechnet: {allowance_calc.matches_summary}
+    prompt = f"""
+    Du bist ein Sachbearbeiter für Reisekostenabrechnungen und musst anhand der folgenden
+    Werte entscheiden, ob die Reisekostenabrechnung approved oder rejected wird.
+    Anschließend schreibst du einen kurzen Kommentar, warum so entschieden wurde.
+
+    Werte:
+    - Gesamtkosten korrekt berechnet: {total_ok}
+    - Ticket existiert im System: {ticket_exists}
+    - Allowance korrekt berechnet: {allowance_calc.matches_summary}
+    - Datumsabgleich korrekt (Header vs Summary): {dates_ok}
 
     Regeln:
-    - Wenn ein Wert False -> approve = false
-    - Wenn alle Werte True -> approve = true
-    - Kommentar: max. 2 kurze Sätze, kurz begründen.
+    - Wenn EIN Wert False ist -> approve = false
+    - Nur wenn ALLE Werte True sind -> approve = true
+    - Kommentar: maximal 2 kurze Sätze, klare Begründung.
 
     Antworte NUR mit JSON: {{"approve": true/false, "comment": "string"}}
     """
 
     structured_llm = llm.with_structured_output(ApprovalDecision)
+
     start = time.time()
     decision: ApprovalDecision = structured_llm.invoke(prompt)
     end = time.time()
     print(f"⏱ LLM-Antwortzeit (ApprovalDecision): {end - start:.2f} Sekunden")
 
     return decision
+
 

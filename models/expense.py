@@ -13,7 +13,7 @@ class PdfSections(BaseModel):
 
 class SummaryExtraction(BaseModel):
     total: float = Field(..., description="Gesamtbetrag Summary")
-    allowances: float = Field(..., description="Allowances Summary")
+    allowance: float = Field(..., description="Allowances Summary")
     transportation_total: float = Field(..., description="Transportkosten Summary")
     accommodation_total: float = Field(
         ...,
@@ -85,15 +85,24 @@ class InvoicesExtraction(BaseModel):
         description="Liste der einzeln extrahierten Beträge aus dem INVOICES-Block",
     )
 
+class DateComparsion(BaseModel):
+    periods_match: bool = Field(
+        ...,
+        description="True, wenn Header- und Summary-Zeitraum exakt übereinstimmen."
+    )
+    trip_days: Optional[int] = Field(
+        ...,
+        description="Anzahl der Reisetage des relevanten Zeitraums (inkl. Start- und Enddatum)."
+    )
+
 __all__ = [
     "PdfSections",
     "Invoice",
-    "Summary",
-    "ExpenseReport",
     "RateSelection",
     "AllowanceCalculation",
     "ApprovalDecision",
     "HeaderExtraction",
     "InvoicesExtraction",
-    "SummaryExtraction"
+    "SummaryExtraction",
+    "DateComparsion"
 ]

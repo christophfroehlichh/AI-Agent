@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TypedDict
+from typing import TypedDict, Optional, Dict, Any
 
-from pydantic import BaseModel
-from langgraph.graph import StateGraph, END
+from langgraph.graph import StateGraph, START, END
 
 from tools.pdf_tools import extract_sections_from_pdf
 from tools.llm_tools import extract_header_with_llm, extract_invoices_with_llm, extract_summary_with_llm
+from tools.backend_tools import get_allowances, check_ticket_exists
 from models.expense import PdfSections, HeaderExtraction, InvoicesExtraction, SummaryExtraction
 
 class GraphState(TypedDict, total=False):
@@ -22,6 +22,11 @@ class GraphState(TypedDict, total=False):
     header_extraction: HeaderExtraction
     invoices_extraction: InvoicesExtraction
     summary_extraction: SummaryExtraction
+    allowances: dict
+    total_ok: bool
+    ticket_exists: bool
+    allowances_ok: bool
+    ticket_data: Optional[Dict]
 
 
 def extract_pdf_node(state: GraphState) -> GraphState:
@@ -40,12 +45,11 @@ def extract_pdf_node(state: GraphState) -> GraphState:
         summary=summary_text,
     )
 
-    return {
-        **state,  # pdf_path bleibt drin
-        "pdf_sections": sections,
+    return {   
+        "pdf_sections": sections
     }
 
-def extract_header_node(state: GraphState) -> GraphState:
+def extract_data_node(state: GraphState) -> GraphState:
     """
     Node 2:
     - Nimmt den Header-Text aus pdf_sections im State
@@ -62,10 +66,24 @@ def extract_header_node(state: GraphState) -> GraphState:
     summary_result: SummaryExtraction = extract_summary_with_llm(summary_text)
 
     return {
-        **state,
         "header_extraction": header_result,
         "invoices_extraction": invoices_result,
         "summary_extraction": summary_result
+    }
+
+def get_allowances_node(state: GraphState) -> GraphState:
+    allowances = get_allowances()
+
+    return {
+        "allowances": allowances
+    }
+
+def check_ticket_exists_node(state: GraphState) -> GraphState:
+    ticket_id = state["header_extraction"].ticket_id
+    ticket_exists, ticket_data = check_ticket_exists(ticket_id)
+    return {
+        "ticket_exists": ticket_exists,
+        "ticket_data": ticket_data
     }
 
 def build_app():
@@ -77,11 +95,21 @@ def build_app():
     graph = StateGraph(GraphState)
 
     graph.add_node("extract_pdf", extract_pdf_node)
-    graph.add_node("extract_header", extract_header_node)
+    graph.add_node("extract_data", extract_data_node)
+    graph.add_node("get_allowances", get_allowances_node)
+    graph.add_node("check_ticket_exists", check_ticket_exists_node)
 
-    graph.set_entry_point("extract_pdf")
-    graph.add_edge("extract_pdf", "extract_header")
-    graph.add_edge("extract_header", END)
+    # Start fächert auf:
+    graph.add_edge(START, "extract_pdf")
+    graph.add_edge(START, "get_allowances")
+
+    # PDF-Flow
+    graph.add_edge("extract_pdf", "extract_data")
+    graph.add_edge("extract_data", "check_ticket_exists")
+    graph.add_edge("check_ticket_exists", END)
+
+    # Allowances-Flow endet direkt
+    graph.add_edge("get_allowances", END)
 
     return graph.compile()
 

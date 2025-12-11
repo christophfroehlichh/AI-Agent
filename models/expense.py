@@ -20,7 +20,7 @@ class Summary(BaseModel):
         description="Unterkunftskosten Summary",
     )
     time_period_summary: Optional[str] = Field(
-        None, description="Zeile aus der Summary, die die Zeitspanne enthält"
+        ..., description="Zeile aus der Summary, die die Zeitspanne enthält"
     )
 
 
@@ -48,7 +48,6 @@ class RateSelection(BaseModel):
         None, description="Tagesatz für die Stadt"
     )
 
-
 class AllowanceCalculation(BaseModel):
     days: int
     expected_allowance: float
@@ -72,7 +71,7 @@ class HeaderExtraction(BaseModel):
         description="Originale Time-Period-Zeile aus dem Header",
     )
     ticket_id: Optional[str] = Field(
-        None,
+        ...,
         description="Ticket- oder Buchungs-ID aus dem Header",
     )
 

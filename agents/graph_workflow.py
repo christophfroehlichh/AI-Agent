@@ -6,10 +6,10 @@ from typing import TypedDict, Optional, Dict
 from langgraph.graph import StateGraph, START, END
 
 from tools.pdf_tools import extract_sections_from_pdf
-from tools.llm_tools import extract_header_with_llm, extract_invoices_with_llm, extract_summary_with_llm
+from tools.llm_tools import extract_header_with_llm, extract_invoices_with_llm, extract_summary_with_llm, select_daily_rate_with_llm
 from tools.backend_tools import get_allowances, check_ticket_exists
 from tools.checks import check_total
-from models.expense import PdfSections, HeaderExtraction, InvoicesExtraction, SummaryExtraction
+from models.expense import PdfSections, HeaderExtraction, InvoicesExtraction, SummaryExtraction, RateSelection
 
 class GraphState(TypedDict, total=False):
     """
@@ -28,6 +28,7 @@ class GraphState(TypedDict, total=False):
     ticket_exists: bool
     allowances_ok: bool
     ticket_data: Optional[Dict]
+    rate_selection: RateSelection
 
 
 def extract_pdf_node(state: GraphState) -> GraphState:
@@ -103,6 +104,32 @@ def check_total_node(state: GraphState) -> GraphState:
         "total_ok": total_ok
     }
 
+def select_daily_rate_node(state: GraphState) -> GraphState:
+    """
+    Node:
+    - Liest destination aus header_extraction
+    - Liest allowances aus dem State
+    - Ruft select_daily_rate_with_llm auf
+    - Schreibt rate_selection in den State
+    """
+    header_extraction = state.get("header_extraction")
+    allowances = state.get("allowances")
+
+    # Noch nicht ready? -> Nichts tun
+    if header_extraction is None or allowances is None:
+        return {}
+
+    destination = header_extraction.destination  # kann None sein, ist okay
+    rate_selection: RateSelection = select_daily_rate_with_llm(
+        destination=destination,
+        allowances=allowances,
+    )
+
+    return {
+        "rate_selection": rate_selection,
+    }
+
+
 
 
 def build_app():
@@ -118,21 +145,29 @@ def build_app():
     graph.add_node("get_allowances", get_allowances_node)
     graph.add_node("check_ticket_exists", check_ticket_exists_node)
     graph.add_node("check_total", check_total_node)
+    graph.add_node("select_daily_rate", select_daily_rate_node)
 
-    # Start fächert auf:
+    # Start: zwei Äste parallel
     graph.add_edge(START, "extract_pdf")
     graph.add_edge(START, "get_allowances")
 
     # PDF-Flow
     graph.add_edge("extract_pdf", "extract_data")
+
+    # Checks, die nur die Extraktion brauchen
     graph.add_edge("extract_data", "check_ticket_exists")
     graph.add_edge("extract_data", "check_total")
+
+    # select_daily_rate braucht BEIDES:
+    # - destination aus header_extraction (kommt aus extract_data)
+    # - allowances aus get_allowances
+    graph.add_edge("extract_data", "select_daily_rate")
+    graph.add_edge("get_allowances", "select_daily_rate")
+
+    # vorläufige Enden
     graph.add_edge("check_ticket_exists", END)
     graph.add_edge("check_total", END)
-
-
-    # Allowances-Flow endet direkt
-    graph.add_edge("get_allowances", END)
+    graph.add_edge("select_daily_rate", END)
 
     return graph.compile()
 

@@ -1,43 +1,20 @@
 from typing import Any, Dict
+from models.expense import InvoicesExtraction, SummaryExtraction
 
 
 def check_total(
-    expense_report_dict: Dict[str, Any],
+    invoices_extraction: InvoicesExtraction,
+    summary_extraction: SummaryExtraction,
 ) -> bool:
     """
-    Addiert alle invoice amounts und vergleicht sie mit summary.total.
-    Gibt True zurück, wenn OK, sonst False. Fehlermeldungen werden per print ausgegeben.
+    Check: Summe aller invoice.amounts soll summary.total entsprechen.
+    Kleine Rundungsfehler werden toleriert.
     """
-    try:
-        invoices = expense_report_dict.get("invoices", [])
-        summary = expense_report_dict.get("summary", {}) or {}
+    invoice_sum = sum(inv.amount for inv in invoices_extraction.invoices)
+    total = summary_extraction.total
 
-        invoice_sum = 0.0
-        for inv in invoices:
-            amount = inv.get("amount", 0.0)
-            try:
-                invoice_sum += float(amount)
-            except (TypeError, ValueError):
-                continue
+    print(f"invoice_sum={invoice_sum}, summary_total={total}")
 
-        try:
-            total = float(summary.get("total", 0.0))
-        except (TypeError, ValueError):
-            total = 0.0
-
-        print(f"total: {total}, invoice_sum: {invoice_sum}")
-
-        if abs(invoice_sum - total) < 0.01:
-            print("Total amount is equal to the sum of items.")
-            return True
-        else:
-            print(
-                "Total amount is NOT equal to the sum of items "
-                f"(sum={invoice_sum:.2f}, total={total:.2f})."
-            )
-            return False
-
-    except Exception as e:
-        print(f"Error while checking total: {e}")
-        return False
+    toleranz = 0.01  
+    return abs(invoice_sum - total) <= toleranz
 

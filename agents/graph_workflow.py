@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TypedDict, Optional, Dict, Any
+from typing import TypedDict, Optional, Dict
 
 from langgraph.graph import StateGraph, START, END
 
 from tools.pdf_tools import extract_sections_from_pdf
 from tools.llm_tools import extract_header_with_llm, extract_invoices_with_llm, extract_summary_with_llm
 from tools.backend_tools import get_allowances, check_ticket_exists
+from tools.checks import check_total
 from models.expense import PdfSections, HeaderExtraction, InvoicesExtraction, SummaryExtraction
 
 class GraphState(TypedDict, total=False):
@@ -86,6 +87,24 @@ def check_ticket_exists_node(state: GraphState) -> GraphState:
         "ticket_data": ticket_data
     }
 
+def check_total_node(state: GraphState) -> GraphState:
+    invoices_extraction = state.get("invoices_extraction")
+    summary_extraction = state.get("summary_extraction")
+
+    if invoices_extraction is None or summary_extraction is None:
+        return {}  
+
+    total_ok = check_total(
+        invoices_extraction,
+        summary_extraction,
+    )
+
+    return {
+        "total_ok": total_ok
+    }
+
+
+
 def build_app():
     """
     Baut den LangGraph-Workflow:
@@ -98,6 +117,7 @@ def build_app():
     graph.add_node("extract_data", extract_data_node)
     graph.add_node("get_allowances", get_allowances_node)
     graph.add_node("check_ticket_exists", check_ticket_exists_node)
+    graph.add_node("check_total", check_total_node)
 
     # Start fächert auf:
     graph.add_edge(START, "extract_pdf")
@@ -106,7 +126,10 @@ def build_app():
     # PDF-Flow
     graph.add_edge("extract_pdf", "extract_data")
     graph.add_edge("extract_data", "check_ticket_exists")
+    graph.add_edge("extract_data", "check_total")
     graph.add_edge("check_ticket_exists", END)
+    graph.add_edge("check_total", END)
+
 
     # Allowances-Flow endet direkt
     graph.add_edge("get_allowances", END)

@@ -142,18 +142,18 @@ def extract_invoices_with_llm(invoices_text: str) -> InvoicesExtraction:
 # 3) SUMMARY mit LLM extrahieren
 # -------------------------------------------
 
-def extract_summary_with_llm(summary_text: str, llm: Optional[ChatOllama] = None) -> SummaryExtraction:
+def extract_summary_with_llm(summary_text: str) -> SummaryExtraction:
     llm = get_llm()
     print("\n-------summarytext-------")
     print(summary_text)
     prompt = f"""
     Lies den folgenden Text und extrahiere:
 
-    - summary.total
-    - summary.allowances
-    - summary.transportation_total
-    - summary.accommodation_total
-    - summary.time_period_summary: der Textteil mit "Time Period" und der Datums-Range.
+    - allowances Ist der Wert nachdem Wort allowances
+    - transportation_total Ist der Wert nachdem Wort transportation Total
+    - accommodation_total Ist der Wert nachdem Wort accommodation Total
+    - time_period_summary: der Textteil mit "Time Period" und der Datums-Range.
+    - total Ist der Wert nachdem Wort Total
 
     Regeln:
     - Beträge wie "1,121.00 USD" → 1121.00
@@ -162,13 +162,11 @@ def extract_summary_with_llm(summary_text: str, llm: Optional[ChatOllama] = None
     Gib ausschließlich dieses JSON zurück:
 
     {{
-    "summary": {{
-        "total": 0.00,
         "allowances": 0.00,
         "transportation_total": 0.00,
         "accommodation_total": 0.00,
-        "time_period_summary": "string oder null"
-    }}
+        "time_period_summary": "string oder null",
+        "total": 0.00,
     }}
 
     Beispiel SUMMARY_TEXT:
@@ -176,13 +174,11 @@ def extract_summary_with_llm(summary_text: str, llm: Optional[ChatOllama] = None
 
     Beispiel-Antwort:
     {{
-    "summary": {{
-        "total": 765.00,
         "allowances": 15.00,
         "transportation_total": 300.00,
         "accommodation_total": 450.00,
         "time_period_summary": "2024-04-01 – 2024-04-03"
-    }}
+        "total": 765.00,
     }}
 
     Hier der echte Text:
@@ -203,7 +199,6 @@ def extract_summary_with_llm(summary_text: str, llm: Optional[ChatOllama] = None
 
 
 def select_daily_rate_with_llm(
-    llm: ChatOllama,
     destination: Optional[str],
     allowances: Dict[str, float],
 ) -> RateSelection:
@@ -211,6 +206,7 @@ def select_daily_rate_with_llm(
     Wählt anhand der Destination eine passende Stadt und Rate aus dem allowances-Mapping.
     Gibt ein RateSelection-Objekt zurück.
     """
+    llm = get_llm()
     prompt = f"""
     Du bekommst eine Destination als String und ein Mapping von Städten zu Tagesätzen (Allowances).
 

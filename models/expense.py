@@ -11,7 +11,7 @@ class PdfSections(BaseModel):
 #     amount: float = Field(..., description="Betrag einer Invoice")
 
 
-class Summary(BaseModel):
+class SummaryExtraction(BaseModel):
     total: float = Field(..., description="Gesamtbetrag Summary")
     allowances: float = Field(..., description="Allowances Summary")
     transportation_total: float = Field(..., description="Transportkosten Summary")
@@ -84,11 +84,6 @@ class InvoicesExtraction(BaseModel):
         default_factory=list,
         description="Liste der einzeln extrahierten Beträge aus dem INVOICES-Block",
     )
-
-
-class SummaryExtraction(BaseModel):
-    summary: Summary
-
 
 __all__ = [
     "PdfSections",

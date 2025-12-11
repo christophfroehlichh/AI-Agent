@@ -1,7 +1,9 @@
 import sys
 from pathlib import Path
 
-from agents.workflow import run_workflow
+# from agents.workflow import run_workflow
+from agents.graph_workflow import run_workflow
+
 
 
 def main(pdf_path_str: str) -> None:

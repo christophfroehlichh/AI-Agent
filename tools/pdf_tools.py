@@ -1,7 +1,9 @@
 from pathlib import Path
 from typing import List, Tuple
 from pypdf import PdfReader
+import logging
 
+logging.getLogger("pypdf").setLevel(logging.ERROR)
 
 def extract_sections_from_pdf(pdf_path: Path) -> Tuple[str, str, str]:
     reader = PdfReader(str(pdf_path))

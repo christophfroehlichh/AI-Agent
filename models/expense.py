@@ -2,9 +2,13 @@ from typing import List, Optional
 
 from pydantic import BaseModel, Field
 
+class PdfSections(BaseModel):
+    header: str
+    invoices: str
+    summary: str
 
-class Invoice(BaseModel):
-    amount: float = Field(..., description="Betrag einer Invoice")
+# class Invoice(BaseModel):
+#     amount: float = Field(..., description="Betrag einer Invoice")
 
 
 class Summary(BaseModel):
@@ -20,20 +24,20 @@ class Summary(BaseModel):
     )
 
 
-class ExpenseReport(BaseModel):
-    destination: Optional[str] = Field(
-        None, description="Destination aus dem Header"
-    )
-    time_period_header: Optional[str] = Field(
-        None, description=" Time-Period-Zeile aus dem Header"
-    )
-    ticket_id: Optional[str] = Field(
-        None, description="Ticket-ID aus dem Header"
-    )
-    invoices: List[Invoice] = Field(
-        default_factory=list, description="Liste der einzelnen Beträge"
-    )
-    summary: Summary
+# class ExpenseReport(BaseModel):
+#     destination: Optional[str] = Field(
+#         None, description="Destination aus dem Header"
+#     )
+#     time_period_header: Optional[str] = Field(
+#         None, description=" Time-Period-Zeile aus dem Header"
+#     )
+#     ticket_id: Optional[str] = Field(
+#         None, description="Ticket-ID aus dem Header"
+#     )
+#     invoices: List[Invoice] = Field(
+#         default_factory=list, description="Liste der einzelnen Beträge"
+#     )
+#     summary: Summary
 
 
 class RateSelection(BaseModel):
@@ -56,11 +60,46 @@ class ApprovalDecision(BaseModel):
     comment: str = Field(..., description="Kommentar zur Entscheidung")
 
 
+
+# -------------------------------------------
+# Pydantic-Modelle für Teil-Extraktionen
+# -------------------------------------------
+
+class HeaderExtraction(BaseModel):
+    destination: Optional[str] = Field(None, description="Reiseziel / Destination aus dem Header")
+    time_period_header: Optional[str] = Field(
+        None,
+        description="Originale Time-Period-Zeile aus dem Header",
+    )
+    ticket_id: Optional[str] = Field(
+        None,
+        description="Ticket- oder Buchungs-ID aus dem Header",
+    )
+
+class Invoice(BaseModel):
+    amount: float = Field(..., description="Betrag einer Invoice")
+    date: Optional[str] = Field(description="Datum der Invoice")
+
+class InvoicesExtraction(BaseModel):
+    invoices: List[Invoice] = Field(
+        default_factory=list,
+        description="Liste der einzeln extrahierten Beträge aus dem INVOICES-Block",
+    )
+
+
+class SummaryExtraction(BaseModel):
+    summary: Summary
+
+
 __all__ = [
+    "PdfSections",
     "Invoice",
     "Summary",
     "ExpenseReport",
     "RateSelection",
     "AllowanceCalculation",
     "ApprovalDecision",
+    "HeaderExtraction",
+    "InvoicesExtraction",
+    "SummaryExtraction"
 ]

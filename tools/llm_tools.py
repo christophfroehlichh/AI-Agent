@@ -1,7 +1,12 @@
+"""
+LLM-based extraction and decision tools.
+Encapsulates all prompt-driven interactions with the language model.
+"""
+
 import json
 import logging
 import time
-from typing import Dict, Optional
+from typing import Dict
 
 from langchain_ollama import ChatOllama
 

@@ -1,3 +1,8 @@
+"""
+PDF text extraction utilities.
+Responsible for loading PDFs and splitting them into logical sections.
+"""
+
 from pathlib import Path
 from typing import List, Tuple
 import logging

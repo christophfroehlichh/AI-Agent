@@ -1,5 +1,6 @@
-langchain
-langchain-community
-langchain-ollama
-pypdf
-requests
+langchain==1.0.7
+langgraph==1.0.3
+langchain-ollama==1.0.0
+pydantic==2.12.4
+pypdf==6.3.0
+requests==2.32.5

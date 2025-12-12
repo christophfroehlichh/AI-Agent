@@ -1,3 +1,8 @@
+"""
+Deterministic validation and calculation logic.
+Contains non-LLM checks used within the workflow.
+"""
+
 import re
 from datetime import date
 from typing import Optional

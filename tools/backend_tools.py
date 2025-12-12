@@ -1,3 +1,8 @@
+"""
+Backend integration utilities.
+Handles communication with the backend service.
+"""
+
 import logging
 from typing import Any, Dict, Optional, Tuple
 

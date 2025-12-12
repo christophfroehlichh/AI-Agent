@@ -1,8 +1,12 @@
-from __future__ import annotations
+"""
+LangGraph workflow definition for processing travel expense PDFs.
+Defines the full agent pipeline from PDF extraction to approval
+decision and backend ticket update using a shared graph state.
+"""
 
+from __future__ import annotations
 from pathlib import Path
 from typing import TypedDict, Optional, Dict
-
 from langgraph.graph import StateGraph, START, END
 
 from tools.pdf_tools import extract_sections_from_pdf
@@ -10,13 +14,12 @@ from tools.llm_tools import extract_header_with_llm, extract_invoices_with_llm, 
 from tools.backend_tools import get_allowances, check_ticket_exists, update_ticket_status
 from tools.checks import check_total, compare_time_periods_with_llm, calculate_allowance
 from models.expense import PdfSections, HeaderExtraction, InvoicesExtraction, SummaryExtraction, RateSelection, DateComparsion, AllowanceCalculation, ApprovalDecision
-from langgraph.graph import draw
+
+
 class GraphState(TypedDict, total=False):
     """
-    State:
-    - pdf_path: Input
-    - pdf_sections: Output des PDF-Tools (Header/Invoices/Summary-Text)
-    - header_extraction: strukturierte Header-Daten aus dem LLM
+    Shared state passed between LangGraph nodes.
+    Each node reads required keys and appends its own results.
     """
     pdf_path: Path
     pdf_sections: PdfSections
@@ -34,102 +37,78 @@ class GraphState(TypedDict, total=False):
 
 
 def extract_pdf_node(state: GraphState) -> GraphState:
-    """
-    Node 1:
-    - nimmt pdf_path aus dem State
-    - ruft dein vorhandenes PDF-Tool auf
-    - schreibt die drei Text-Blöcke zurück in den State
-    """
-    pdf_path = state["pdf_path"]
+    """Extracts header, invoice and summary text sections from the input PDF."""
+    pdf_path = state.get("pdf_path")
+    if pdf_path is None:
+        return {}
+
     header_text, invoices_text, summary_text = extract_sections_from_pdf(pdf_path)
 
-    sections = PdfSections(
-        header=header_text,
-        invoices=invoices_text,
-        summary=summary_text,
-    )
-
-    return {   
-        "pdf_sections": sections
+    return {
+        "pdf_sections": PdfSections(
+            header=header_text,
+            invoices=invoices_text,
+            summary=summary_text,
+        )
     }
+
 
 def extract_data_node(state: GraphState) -> GraphState:
-    """
-    Node 2:
-    - Nimmt den Header-Text aus pdf_sections im State
-    - Ruft das LLM auf, um destination, time_period_header und ticket_id zu extrahieren
-    - Schreibt das Ergebnis als HeaderExtraction in den State
-    """
-    pdf_sections = state["pdf_sections"]
-    header_text = pdf_sections.header
-    invoices_text = pdf_sections.invoices
-    summary_text = pdf_sections.summary
-
-    header_result: HeaderExtraction = extract_header_with_llm(header_text)
-    invoices_result: InvoicesExtraction = extract_invoices_with_llm(invoices_text)
-    summary_result: SummaryExtraction = extract_summary_with_llm(summary_text)
+    """Extracts structured header, invoices and summary data from PDF sections using LLMs."""
+    pdf_sections = state.get("pdf_sections")
+    if pdf_sections is None:
+        return {}
 
     return {
-        "header_extraction": header_result,
-        "invoices_extraction": invoices_result,
-        "summary_extraction": summary_result
+        "header_extraction": extract_header_with_llm(pdf_sections.header),
+        "invoices_extraction": extract_invoices_with_llm(pdf_sections.invoices),
+        "summary_extraction": extract_summary_with_llm(pdf_sections.summary),
     }
 
-def get_allowances_node(state: GraphState) -> GraphState:
-    allowances = get_allowances()
 
-    return {
-        "allowances": allowances
-    }
+def get_allowances_node(_: GraphState) -> GraphState:
+    """Loads allowance rates from the backend service."""
+    return {"allowances": get_allowances()}
+
 
 def check_ticket_exists_node(state: GraphState) -> GraphState:
-    ticket_id = state["header_extraction"].ticket_id
+    """Checks whether the extracted ticket_id exists in the backend and returns ticket data."""
+    header = state.get("header_extraction")
+    ticket_id = header.ticket_id if header else None
+    if not ticket_id:
+        return {"ticket_exists": False, "ticket_data": None}
+
     ticket_exists, ticket_data = check_ticket_exists(ticket_id)
     return {
         "ticket_exists": ticket_exists,
-        "ticket_data": ticket_data
+        "ticket_data": ticket_data,
     }
+
 
 def check_total_node(state: GraphState) -> GraphState:
-    invoices_extraction = state.get("invoices_extraction")
-    summary_extraction = state.get("summary_extraction")
-
-    if invoices_extraction is None or summary_extraction is None:
-        return {}  
-
-    total_ok = check_total(
-        invoices_extraction,
-        summary_extraction,
-    )
-
-    return {
-        "total_ok": total_ok
-    }
-
-def select_daily_rate_node(state: GraphState) -> GraphState:
-    """
-    Node:
-    - Liest destination aus header_extraction
-    - Liest allowances aus dem State
-    - Ruft select_daily_rate_with_llm auf
-    - Schreibt rate_selection in den State
-    """
-    header_extraction = state.get("header_extraction")
-    allowances = state.get("allowances")
-
-    # Noch nicht ready? -> Nichts tun
-    if header_extraction is None or allowances is None:
+    """Checks whether the sum of invoice amounts matches the summary total."""
+    invoices = state.get("invoices_extraction")
+    summary = state.get("summary_extraction")
+    if invoices is None or summary is None:
         return {}
 
-    destination = header_extraction.destination  # kann None sein, ist okay
-    rate_selection: RateSelection = select_daily_rate_with_llm(
-        destination=destination,
-        allowances=allowances,
-    )
+    return {"total_ok": check_total(invoices, summary)}
+
+
+def select_daily_rate_node(state: GraphState) -> GraphState:
+    """Selects the applicable daily allowance rate based on destination."""
+    header = state.get("header_extraction")
+    allowances = state.get("allowances")
+    if header is None or allowances is None:
+        return {}
 
     return {
-        "rate_selection": rate_selection,
+        "rate_selection": select_daily_rate_with_llm(
+            destination=header.destination,
+            allowances=allowances,
+        )
     }
+
 
 def compare_dates_node(state: GraphState) -> GraphState:
     """

@@ -1,7 +1,10 @@
+"""
+Entry point for the expense agent workflow.
+Validates CLI input and starts the LangGraph-based processing pipeline.
+"""
+
 import sys
 from pathlib import Path
-
-# from agents.workflow import run_workflow
 from agents.graph_workflow import run_workflow
 
 

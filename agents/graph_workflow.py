@@ -66,7 +66,7 @@ def extract_data_node(state: GraphState) -> GraphState:
     }
 
 
-def get_allowances_node(_: GraphState) -> GraphState:
+def get_allowances_node(state: GraphState) -> GraphState:
     """Loads allowance rates from the backend service."""
     return {"allowances": get_allowances()}
 
@@ -104,131 +104,83 @@ def select_daily_rate_node(state: GraphState) -> GraphState:
 
     return {
         "rate_selection": select_daily_rate_with_llm(
-            destination=header.destination,
-            allowances=allowances,
+            header.destination,
+            allowances,
         )
     }
 
 
 def compare_dates_node(state: GraphState) -> GraphState:
-    """
-    Vergleicht die Zeiträume aus Header und Summary
-    und schreibt ein DateComparsion-Objekt in den State.
-    """
-    header_extraction = state.get("header_extraction")
-    summary_extraction = state.get("summary_extraction")
-
-    # Guard: läuft erst, wenn beide vorhanden sind
-    if header_extraction is None or summary_extraction is None:
+    """Compares header and summary travel time periods."""
+    header = state.get("header_extraction")
+    summary = state.get("summary_extraction")
+    if header is None or summary is None:
         return {}
 
-    header_time_period = header_extraction.time_period_header
-    summary_time_period = summary_extraction.time_period_summary
-
-    date_comparsion: DateComparsion = compare_time_periods_with_llm(
-        header_time_period=header_time_period,
-        summary_time_period=summary_time_period,
-    )
-
     return {
-        "date_comparsion": date_comparsion,
+        "date_comparsion": compare_time_periods_with_llm(
+            header.time_period_header,
+            summary.time_period_summary,
+        )
     }
 
 
 def allowance_check_node(state: GraphState) -> GraphState:
-    date_comparsion = state.get("date_comparsion")
-    rate_selection = state.get("rate_selection")
-    summary_extraction = state.get("summary_extraction")
-    
-    # Guard: Node nur „wirklich“ ausführen, wenn ALLES da ist
-    if date_comparsion is None or rate_selection is None or summary_extraction is None:
-        # Nichts ändern, nur State durchreichen
-        return state
-
-    daily_rate = rate_selection.daily_rate
-    allowance_summary = summary_extraction.allowance  # Feldname aus SummaryExtraction
-
-    result = calculate_allowance(date_comparsion, daily_rate, allowance_summary)
+    """Calculates expected allowances and compares them with the summary."""
+    date_cmp = state.get("date_comparsion")
+    rate = state.get("rate_selection")
+    summary = state.get("summary_extraction")
+    if date_cmp is None or rate is None or summary is None:
+        return {}
 
     return {
-        "allowance_calculation": result
+        "allowance_calculation": calculate_allowance(
+            date_cmp,
+            rate.daily_rate,
+            summary.allowance,
+        )
     }
 
+
 def approval_decision_node(state: GraphState) -> GraphState:
+    """Builds the final approval decision based on all validation results."""
     total_ok = state.get("total_ok")
     ticket_exists = state.get("ticket_exists")
     allowance_calc = state.get("allowance_calculation")
-    date_comparsion = state.get("date_comparsion")
+    date_cmp = state.get("date_comparsion")
 
-    # Guard: nur ausführen, wenn alles da ist
-    if total_ok is None or ticket_exists is None or allowance_calc is None or date_comparsion is None:
-        return state
-    
-    dates_ok = date_comparsion.periods_match
+    if total_ok is None or ticket_exists is None or allowance_calc is None or date_cmp is None:
+        return {}
 
     decision = build_approval_decision_with_llm(
-        total_ok=total_ok,
-        ticket_exists=ticket_exists,
-        allowance_calc=allowance_calc,
-        dates_ok=dates_ok,
+        total_ok,
+        ticket_exists,
+        allowance_calc,
+        date_cmp.periods_match,
     )
 
-    return {
-        "approval_decision": decision,
-    }
+    return {"approval_decision": decision}
+
 
 def update_ticket_status_node(state: GraphState) -> GraphState:
-    print("\n🔥 [update_ticket_status_node] Aufgerufen!")
-    print("State Keys:", list(state.keys()))
-
+    """Updates the ticket status in the backend based on the approval decision."""
     ticket_data = state.get("ticket_data")
     decision = state.get("approval_decision")
     header = state.get("header_extraction")
 
-    # ticket_id erst NACHDEM wir header geladen haben holen
     ticket_id = header.ticket_id if header else None
+    if ticket_id is None or decision is None or ticket_data is None:
+        return {}
 
-    print("  ➜ ticket_id:", ticket_id)
-    print("  ➜ decision:", decision)
-    print("  ➜ ticket_data:", ticket_data)
-
-    # Guard prüfen
-    missing = []
-    if ticket_id is None:
-        missing.append("ticket_id")
-    if decision is None:
-        missing.append("approval_decision")
-    if ticket_data is None:
-        missing.append("ticket_data")
-
-    if missing:
-        print(f"⛔ Guard aktiv – folgende Werte fehlen noch: {missing}")
-        print("⛔ update_ticket_status_node beendet – State unverändert.")
-        return state
-
-    print("✅ Alle Werte vorhanden – führe Backend-Update aus...")
-
-    update_ticket_status(
-        ticket_id=ticket_id,
-        decision=decision,
-        ticket_data=ticket_data,
-    )
-
-    print(f"🎉 Ticket {ticket_id} erfolgreich im Backend aktualisiert.")
-    return state
-
-
-
+    update_ticket_status(ticket_id, decision, ticket_data)
+    return {}
 
 
 def build_app():
-    """
-    Baut den LangGraph-Workflow:
-    - ein Node: extract_pdf
-    - danach direkt END
-    """
+    """Builds and compiles the LangGraph workflow."""
     graph = StateGraph(GraphState)
 
+    # Nodes
     graph.add_node("extract_pdf", extract_pdf_node)
     graph.add_node("extract_data", extract_data_node)
     graph.add_node("get_allowances", get_allowances_node)
@@ -240,27 +192,25 @@ def build_app():
     graph.add_node("approval_decision", approval_decision_node)
     graph.add_node("update_ticket_status", update_ticket_status_node)
 
-    # Start: zwei Äste parallel
+    # Start
     graph.add_edge(START, "extract_pdf")
     graph.add_edge(START, "get_allowances")
 
-    # PDF-Flow
+    # Extraction flow
     graph.add_edge("extract_pdf", "extract_data")
 
-    # Checks, die nur die Extraktion brauchen
+    # Validation + enrichment
     graph.add_edge("extract_data", "check_ticket_exists")
     graph.add_edge("extract_data", "check_total")
-
-    # select_daily_rate braucht BEIDES:
-    # - destination aus header_extraction (kommt aus extract_data)
-    # - allowances aus get_allowances
-    graph.add_edge("extract_data", "select_daily_rate")
     graph.add_edge("extract_data", "compare_dates")
+    graph.add_edge("extract_data", "select_daily_rate")
     graph.add_edge("get_allowances", "select_daily_rate")
 
+    # Allowance check depends on dates + daily rate
     graph.add_edge("compare_dates", "allowance_check")
     graph.add_edge("select_daily_rate", "allowance_check")
-    # vorläufige Enden
+
+    # Final decision and backend update
     graph.add_edge("check_ticket_exists", "approval_decision")
     graph.add_edge("check_total", "approval_decision")
     graph.add_edge("allowance_check", "approval_decision")
@@ -270,15 +220,8 @@ def build_app():
     return graph.compile()
 
 
-
 def run_workflow(pdf_path: Path) -> None:
+    """Runs the compiled LangGraph workflow for the given PDF."""
     app = build_app()
+    app.invoke({"pdf_path": pdf_path})
 
-    initial_state: GraphState = {
-        "pdf_path": pdf_path,
-    }
-
-    final_state: GraphState = app.invoke(initial_state)
-
-    print("=== Finaler GraphState ===")
-    print("pdf_path:", final_state)

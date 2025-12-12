@@ -4,10 +4,18 @@ Validates CLI input and starts the LangGraph-based processing pipeline.
 """
 
 import sys
+import logging
 from pathlib import Path
+
 from agents.graph_workflow import run_workflow
 
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(levelname)s | %(name)s | %(message)s",
+)
+
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 def main(pdf_path_str: str) -> None:
     pdf_path = Path(pdf_path_str)

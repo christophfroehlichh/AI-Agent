@@ -1,31 +1,26 @@
-from typing import Optional
-from models.expense import InvoicesExtraction, SummaryExtraction, DateComparsion, AllowanceCalculation
 import re
 from datetime import date
+from typing import Optional
 
-def check_total(
-    invoices_extraction: InvoicesExtraction,
-    summary_extraction: SummaryExtraction,
-) -> bool:
-    """
-    Check: Summe aller invoice.amounts soll summary.total entsprechen.
-    Kleine Rundungsfehler werden toleriert.
-    """
-    invoice_sum = sum(inv.amount for inv in invoices_extraction.invoices)
-    total = summary_extraction.total
+from models.expense import (
+    AllowanceCalculation,
+    DateComparsion,
+    InvoicesExtraction,
+    SummaryExtraction,
+)
 
-    print(f"invoice_sum={invoice_sum}, summary_total={total}")
-
-    toleranz = 0.01  
-    return abs(invoice_sum - total) <= toleranz
+DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+MONEY_TOLERANCE = 0.01
 
 
-
-DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")  # findet YYYY-MM-DD
+def check_total(invoices: InvoicesExtraction, summary: SummaryExtraction) -> bool:
+    """Checks whether invoice sum matches the summary total (tolerance applied)."""
+    invoice_sum = sum(inv.amount for inv in invoices.invoices)
+    return abs(invoice_sum - summary.total) <= MONEY_TOLERANCE
 
 
 def _extract_dates(period_str: Optional[str]) -> tuple[Optional[date], Optional[date]]:
-    """Extrahiert Start- und Enddatum aus einem 'Time Period'-String."""
+    """Extracts (start, end) dates from a time period string (YYYY-MM-DD ... YYYY-MM-DD)."""
     if not period_str:
         return None, None
 
@@ -33,15 +28,12 @@ def _extract_dates(period_str: Optional[str]) -> tuple[Optional[date], Optional[
     if len(matches) < 2:
         return None, None
 
-    start_str, end_str = matches[0], matches[1]
-
     try:
-        start = date.fromisoformat(start_str)
-        end = date.fromisoformat(end_str)
+        start = date.fromisoformat(matches[0])
+        end = date.fromisoformat(matches[1])
     except ValueError:
         return None, None
 
-    # falls vertauscht
     if end < start:
         start, end = end, start
 
@@ -49,28 +41,17 @@ def _extract_dates(period_str: Optional[str]) -> tuple[Optional[date], Optional[
 
 
 def _length_in_days(start: Optional[date], end: Optional[date]) -> Optional[int]:
-    """Inklusive Anzahl Tage (start & end zählen mit)."""
+    """Inclusive day count for a start/end date range."""
     if start is None or end is None:
         return None
     return (end - start).days + 1
 
-def compare_time_periods_with_llm(   # Name kannst du lassen oder umbenennen
+
+def compare_time_periods(
     header_time_period: Optional[str],
     summary_time_period: Optional[str],
 ) -> DateComparsion:
-    """
-    Vergleicht Header- und Summary-Zeitraum OHNE Invoices.
-
-    Logik:
-    - periods_match = True, wenn Start- und Enddatum beider Zeiträume identisch sind.
-    - periods_match = False, wenn sie sich unterscheiden.
-    - trip_days: Anzahl Tage (inkl. Start/Ende) des gewählten Zeitraums:
-        - Wenn periods_match = True: gemeinsamer Zeitraum.
-        - Wenn periods_match = False: der längere der beiden Zeiträume.
-    - effective_time_period: der originale String (Header oder Summary), der zur
-      Berechnung von trip_days verwendet wurde.
-    """
-
+    """Compares header vs. summary periods and returns whether they match and the effective trip length."""
     h_start, h_end = _extract_dates(header_time_period)
     s_start, s_end = _extract_dates(summary_time_period)
 
@@ -84,57 +65,23 @@ def compare_time_periods_with_llm(   # Name kannst du lassen oder umbenennen
         and h_end == s_end
     )
 
-    # kein gültiger Zeitraum
     if h_days is None and s_days is None:
-        return DateComparsion(
-            periods_match=False,
-            trip_days=None,
-        )
+        return DateComparsion(periods_match=False, trip_days=None)
 
-    # längeren Zeitraum wählen (bei Gleichstand: Header bevorzugen)
-    if (s_days or 0) > (h_days or 0):
-        trip_days = s_days
-    else:
-        trip_days = h_days
+    trip_days = s_days if (s_days or 0) > (h_days or 0) else h_days
+    return DateComparsion(periods_match=periods_match, trip_days=trip_days)
 
-    return DateComparsion(
-        periods_match=periods_match,
-        trip_days=trip_days,
-    )
 
-def calculate_allowance(  # Name kannst du gern noch umbenennen :)
-    date_comparsion: DateComparsion,
+def calculate_allowance(
+    date_cmp: DateComparsion,
     daily_rate: Optional[float],
     extracted_allowance: Optional[float],
 ) -> AllowanceCalculation:
-    """
-    Berechnet auf Basis von trip_days aus DateComparsion, ob die Allowance korrekt ist.
+    """Computes expected allowance and checks it against the extracted summary allowance."""
+    if date_cmp.trip_days is None or daily_rate is None or extracted_allowance is None:
+        return AllowanceCalculation(days=date_cmp.trip_days or 0, expected_allowance=0.0, matches_summary=False)
 
-    - trip_days kommt aus DateComparsion (inkl. Start- und Enddatum).
-    - expected_allowance = daily_rate * trip_days
-    - matches_summary: True, wenn expected_allowance ~= extracted_allowance (Toleranz 0.01)
-    """
+    expected = daily_rate * date_cmp.trip_days
+    matches = abs(expected - extracted_allowance) <= MONEY_TOLERANCE
 
-    # Fallback, falls irgendwas fehlt → kein valider Vergleich möglich
-    if (
-        date_comparsion.trip_days is None
-        or daily_rate is None
-        or extracted_allowance is None
-    ):
-        return AllowanceCalculation(
-            days=date_comparsion.trip_days or 0,
-            expected_allowance=0.0,
-            matches_summary=False,
-        )
-
-    days = date_comparsion.trip_days
-    expected_allowance = daily_rate * days
-
-    # kleine Toleranz, damit Rundungsfehler nicht stören
-    matches_summary = abs(expected_allowance - extracted_allowance) <= 0.01
-
-    return AllowanceCalculation(
-        days=days,
-        expected_allowance=expected_allowance,
-        matches_summary=matches_summary,
-    )
+    return AllowanceCalculation(days=date_cmp.trip_days, expected_allowance=expected, matches_summary=matches)

@@ -73,7 +73,7 @@ class DateComparsion(BaseModel):  # known typo, kept for compatibility
         ..., description="Whether header and summary periods match"
     )
     trip_days: Optional[int] = Field(
-        None, description="Number of travel days (inclusive)"
+        None, description="Number of travel days"
     )
 
 

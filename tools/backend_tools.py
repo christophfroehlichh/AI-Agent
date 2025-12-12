@@ -1,8 +1,12 @@
+import logging
 from typing import Any, Dict, Optional, Tuple
 
 import requests
-from config.settings import BASE_URL, USERNAME, PASSWORD
+
+from config.settings import BASE_URL, PASSWORD, USERNAME
 from models.expense import ApprovalDecision
+
+logger = logging.getLogger(__name__)
 
 AUTH = (USERNAME, PASSWORD)
 
@@ -10,25 +14,19 @@ AUTH = (USERNAME, PASSWORD)
 def _backend_request(
     method: str,
     path: str,
-    *,
     params: Optional[Dict[str, Any]] = None,
-    json: Optional[Dict[str, Any]] = None,
+    payload: Optional[Dict[str, Any]] = None,
     timeout: float = 10.0,
 ) -> Tuple[Optional[requests.Response], Optional[Exception]]:
-    """
-    Zentrale Helper-Funktion für alle Backend-Calls.
-    Kümmert sich um Base URL, Auth und Timeout.
-
-    Gibt (response, error) zurück. Genau einer von beiden ist None.
-    """
+    """Executes a backend HTTP request and returns (response, error)."""
     url = f"{BASE_URL}{path}"
     try:
         resp = requests.request(
-            method=method.upper(),
-            url=url,
-            params=params,
-            json=json,
+            method.upper(),
+            url,
             auth=AUTH,
+            params=params,
+            json=payload,
             timeout=timeout,
         )
         return resp, None
@@ -37,116 +35,88 @@ def _backend_request(
 
 
 def get_allowances() -> Dict[str, float]:
-    """
-    Holt das Allowances-Mapping vom Backend: GET /allowances
-    """
+    """Fetches allowance mapping from backend (GET /allowances)."""
     resp, error = _backend_request("GET", "/allowances")
     if error is not None:
-        print(f"Error while fetching allowances: {error}")
+        logger.warning("Failed to fetch allowances: %s", error)
         return {}
     if resp is None:
-        print("No response when fetching allowances.")
+        logger.warning("No response when fetching allowances.")
         return {}
+
+    if resp.status_code != 200:
+        logger.warning("Unexpected HTTP %s while fetching allowances.", resp.status_code)
+        return {}
+
+    try:
+        data = resp.json()
+        logger.info("Loaded %d allowance entries.", len(data))
+        return {k: float(v) for k, v in data.items()}
+
+    except Exception as e:
+        logger.warning("Failed to parse allowances JSON: %s", e)
+        return {}
+
+
+def check_ticket_exists(ticket_id: Optional[str]) -> Tuple[bool, Optional[Dict[str, Any]]]:
+    """Checks if a travel ticket exists (GET /travelTicket) and returns (exists, ticket_data)."""
+    if not ticket_id:
+        return False, None
+
+    resp, error = _backend_request("GET", "/travelTicket", {"ticketID": ticket_id})
+    if error is not None:
+        logger.warning("Failed to check ticket %s: %s", ticket_id, error)
+        return False, None
+    if resp is None:
+        logger.warning("No response while checking ticket %s.", ticket_id)
+        return False, None
+
     if resp.status_code == 200:
         try:
             data = resp.json()
-            return {k: float(v) for k, v in data.items()}
+            logger.info("Ticket %s found in backend.", ticket_id)
+            return True, data
         except Exception as e:
-            print(f"Error parsing allowances JSON: {e}")
-            return {}
-    else:
-        print(f"Unexpected HTTP {resp.status_code} while fetching allowances.")
-        return {}
+            logger.warning("Failed to parse ticket JSON for %s: %s", ticket_id, e)
+            return False, None
 
+    if resp.status_code == 404:
+        return False, None
 
-def check_ticket_exists(
-    ticket_id: str,
-) -> Tuple[bool, Optional[Dict[str, Any]]]:
-    """
-    Prüft, ob das Ticket im Backend existiert und gibt (exists, ticket_data) zurück.
-    Fehler werden kurz ausgegeben (print).
-
-    INPUT:
-        ticket_id (str): Ticket-ID, die im Backend geprüft werden soll.
-
-    OUTPUT:
-        exists (bool): True, wenn Ticket existiert.
-        ticket_data (dict | None): JSON-Daten des Tickets, falls vorhanden.
-    """
-    exists = False
-    ticket_data = None
-
-    if not ticket_id:
-        print("No ticket_id in expense report; cannot verify ticket in backend.")
-        return exists, ticket_data
-
-    resp, error = _backend_request(
-        "GET",
-        "/travelTicket",
-        params={"ticketID": ticket_id},
-    )
-
-    if error is not None:
-        print(f"Error while checking ticket {ticket_id} in backend: {error}")
-        return exists, ticket_data
-
-    if resp is None:
-        print(f"No response while checking ticket {ticket_id} in backend.")
-        return exists, ticket_data
-
-    if resp.status_code == 200:
-        try:
-            ticket_data = resp.json()
-            print(f"Ticket {ticket_id} exists in backend system.")
-            exists = True
-        except Exception as e:
-            print(f"Error parsing ticket JSON for {ticket_id}: {e}")
-    elif resp.status_code == 404:
-        print(f"Ticket {ticket_id} does NOT exist in backend system (404).")
-    else:
-        print(
-            f"Unexpected response while checking ticket {ticket_id}: HTTP {resp.status_code}."
-        )
-
-    return exists, ticket_data
+    logger.warning("Unexpected HTTP %s while checking ticket %s.", resp.status_code, ticket_id)
+    return False, None
 
 
 def update_ticket_status(
     ticket_id: Optional[str],
     decision: ApprovalDecision,
-    ticket_data: Optional[Dict[str, Any]] = None,
+    ticket_data: Optional[Dict[str, Any]],
 ) -> None:
-    """
-    Setzt ticketStatus + comment auf bereits gehohlte Ticket-Daten (falls vorhanden)
-    und schreibt es dann mit PUT /travelTicket zurück.
-    Gibt keine Log-Zeichenkette zurück, sondern druckt bei Fehlern/Erfolg.
-    """
+    """Updates ticketStatus and comment and writes back the ticket (PUT /travelTicket)."""
     if not ticket_id:
-        print("Cannot update ticket status: no ticket_id available.")
+        logger.warning("Cannot update ticket: missing ticket_id.")
+        return
+    if ticket_data is None:
+        logger.warning("Cannot update ticket %s: missing ticket_data.", ticket_id)
         return
 
-    # Status + Kommentar setzen
     ticket_data["ticketStatus"] = "APPROVED" if decision.approve else "REJECTED"
     ticket_data["comment"] = decision.comment
 
-    # PUT /travelTicket
-    resp, error = _backend_request(
-        "PUT",
-        "/travelTicket",
-        json=ticket_data,
-    )
+    resp, error = _backend_request("PUT", "/travelTicket", None, ticket_data)
     if error is not None:
-        print(f"Error while updating ticket {ticket_id} in backend: {error}")
+        logger.warning("Failed to update ticket %s: %s", ticket_id, error)
         return
     if resp is None:
-        print(f"No response while updating ticket {ticket_id} in backend.")
+        logger.warning("No response while updating ticket %s.", ticket_id)
         return
     if resp.status_code not in (200, 204):
-        print(
-            f"Unexpected HTTP {resp.status_code} while updating ticket {ticket_id}: "
-            f"{resp.text}"
+        logger.warning(
+            "Unexpected HTTP %s while updating ticket %s: %s",
+            resp.status_code,
+            ticket_id,
+            resp.text,
         )
         return
 
-    print(f"Ticket {ticket_id} updated in backend (status={ticket_data['ticketStatus']}).")
-
+    logger.info("Ticket %s updated (status=%s).", ticket_id, ticket_data["ticketStatus"])

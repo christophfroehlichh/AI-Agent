@@ -5,16 +5,42 @@ decision and backend ticket update using a shared graph state.
 """
 
 from __future__ import annotations
+import logging
 from pathlib import Path
 from typing import TypedDict, Optional, Dict
 from langgraph.graph import StateGraph, START, END
 
-from tools.pdf_tools import extract_sections_from_pdf
-from tools.llm_tools import extract_header_with_llm, extract_invoices_with_llm, extract_summary_with_llm, select_daily_rate_with_llm, build_approval_decision_with_llm
-from tools.backend_tools import get_allowances, check_ticket_exists, update_ticket_status
-from tools.checks import check_total, compare_time_periods_with_llm, calculate_allowance
-from models.expense import PdfSections, HeaderExtraction, InvoicesExtraction, SummaryExtraction, RateSelection, DateComparsion, AllowanceCalculation, ApprovalDecision
 
+from models.expense import (
+    AllowanceCalculation,
+    ApprovalDecision,
+    DateComparsion,
+    HeaderExtraction,
+    InvoicesExtraction,
+    PdfSections,
+    RateSelection,
+    SummaryExtraction,
+)
+from tools.backend_tools import (
+    check_ticket_exists, 
+    get_allowances, 
+    update_ticket_status
+)
+from tools.checks import (
+    calculate_allowance, 
+    check_total, 
+    compare_time_periods
+)
+from tools.llm_tools import (
+    build_approval_decision_with_llm,
+    extract_header_with_llm,
+    extract_invoices_with_llm,
+    extract_summary_with_llm,
+    select_daily_rate_with_llm,
+)
+from tools.pdf_tools import extract_sections_from_pdf
+
+logger = logging.getLogger(__name__)
 
 class GraphState(TypedDict, total=False):
     """
@@ -118,7 +144,7 @@ def compare_dates_node(state: GraphState) -> GraphState:
         return {}
 
     return {
-        "date_comparsion": compare_time_periods_with_llm(
+        "date_comparsion": compare_time_periods(
             header.time_period_header,
             summary.time_period_summary,
         )
@@ -222,6 +248,8 @@ def build_app():
 
 def run_workflow(pdf_path: Path) -> None:
     """Runs the compiled LangGraph workflow for the given PDF."""
+    logger.info("Workflow started (pdf=%s).", pdf_path)
     app = build_app()
     app.invoke({"pdf_path": pdf_path})
+    logger.info("Workflow finished.")
 

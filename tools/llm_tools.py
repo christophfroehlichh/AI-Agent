@@ -1,43 +1,41 @@
-import time
 import json
+import logging
+import time
 from typing import Dict, Optional
 
 from langchain_ollama import ChatOllama
+
 from config.settings import OLLAMA_MODEL
 from models.expense import (
     AllowanceCalculation,
     ApprovalDecision,
-    RateSelection,
     HeaderExtraction,
     InvoicesExtraction,
+    RateSelection,
     SummaryExtraction,
-    DateComparsion
 )
 
-# LLM Instanz zum weiterverwenden in diesem Modul
+logger = logging.getLogger(__name__)
+logging.getLogger("pypdf").setLevel(logging.ERROR)
+
 _LLM: ChatOllama | None = None
 
 def get_llm() -> ChatOllama:
-    """
-    Erzeugt eine ChatOllama-Instanz, die für JSON/structured output taugt.
-    Das `format="json"` hilft, dass das Modell gültiges JSON ausspuckt.
-    """
+    """Returns a cached ChatOllama instance."""
     global _LLM
     if _LLM is None:
+        logger.info("Initializing LLM (%s)...", OLLAMA_MODEL)
         _LLM = ChatOllama(
             model=OLLAMA_MODEL,
             temperature=0.0,
         )
+        logger.info("LLM initialized.")
     return _LLM
 
-# -------------------------------------------
-# 1) HEADER mit LLM extrahieren
-# -------------------------------------------
 
 def extract_header_with_llm(header_text: str) -> HeaderExtraction:
+    """Uses an LLM to extract destination, ticket ID and time period from the PDF header."""
     llm = get_llm()
-    print("\n-------headertext-------")
-    print(header_text)
     prompt = f"""
     Lies den folgenden HEADER-Text und extrahiere exakt diese Felder:
 
@@ -71,25 +69,19 @@ def extract_header_with_llm(header_text: str) -> HeaderExtraction:
     {header_text}
     """
 
-
     structured_llm = llm.with_structured_output(HeaderExtraction)
 
     start = time.time()
     result: HeaderExtraction = structured_llm.invoke(prompt)
     end = time.time()
-    print(f"⏱ LLM-Antwortzeit (HEADER): {end - start:.2f} Sekunden")
+    logger.info("LLM latency (HEADER EXTRACTION): %.2fs", end - start)
 
     return result
 
 
-# -------------------------------------------
-# 2) INVOICES mit LLM extrahieren
-# -------------------------------------------
-
 def extract_invoices_with_llm(invoices_text: str) -> InvoicesExtraction:
+    """Uses an LLM to extract structured invoice line items from the INVOICES section."""
     llm = get_llm()
-    print("\n-------invoicestext-------")
-    print(invoices_text)
     prompt = f"""
     Lies den folgenden INVOICES-Text und extrahiere eine Liste von Einträgen.
 
@@ -128,25 +120,19 @@ def extract_invoices_with_llm(invoices_text: str) -> InvoicesExtraction:
     {invoices_text}
     """
 
-
     structured_llm = llm.with_structured_output(InvoicesExtraction)
 
     start = time.time()
     result: InvoicesExtraction = structured_llm.invoke(prompt)
     end = time.time()
-    print(f"⏱ LLM-Antwortzeit (INVOICES): {end - start:.2f} Sekunden")
+    logger.info("LLM latency (INVOICES EXTRACTION): %.2fs", end - start)
 
     return result
 
 
-# -------------------------------------------
-# 3) SUMMARY mit LLM extrahieren
-# -------------------------------------------
-
 def extract_summary_with_llm(summary_text: str) -> SummaryExtraction:
+    """Uses an LLM to extract totals, allowances and the travel period from the summary section."""
     llm = get_llm()
-    print("\n-------summarytext-------")
-    print(summary_text)
     prompt = f"""
     Lies den folgenden Text und extrahiere:
 
@@ -188,25 +174,21 @@ def extract_summary_with_llm(summary_text: str) -> SummaryExtraction:
     {summary_text}
     """
 
-
     structured_llm = llm.with_structured_output(SummaryExtraction)
 
     start = time.time()
     result: SummaryExtraction = structured_llm.invoke(prompt)
     end = time.time()
-    print(f"⏱ LLM-Antwortzeit (SUMMARY): {end - start:.2f} Sekunden")
+    logger.info("LLM latency (SUMMARY EXTRACTION): %.2fs", end - start)
 
     return result
 
 
 def select_daily_rate_with_llm(
-    destination: Optional[str],
+    destination: str,
     allowances: Dict[str, float],
 ) -> RateSelection:
-    """
-    Wählt anhand der Destination eine passende Stadt und Rate aus dem allowances-Mapping.
-    Gibt ein RateSelection-Objekt zurück.
-    """
+    """Uses an LLM to select the most appropriate daily allowance rate based on the destination."""
     llm = get_llm()
     prompt = f"""
     Du bekommst eine Destination als String und ein Mapping von Städten zu Tagesätzen (Allowances).
@@ -227,45 +209,7 @@ def select_daily_rate_with_llm(
     start = time.time()
     result: RateSelection = structured_llm.invoke(prompt)
     end = time.time()
-    print(f"⏱ LLM-Antwortzeit (RateSelection): {end - start:.2f} Sekunden")
-
-    return result
-
-def calculate_allowance_with_llm(
-    time_period_summary: Optional[str],
-    daily_rate: Optional[float],
-    extracted_allowance: Optional[float],
-) -> AllowanceCalculation:
-    """
-    Lässt das LLM die Dauer der Reise berechnen und anschließend wird geprüft ob die Allowance korrekt berechnet wurde.
-    """
-    prompt = f"""
-    Du bist ein Sachbearbeiter für Reisekostenabrechnungen und du musst berechnen wie lange die Reise ging und
-    ob die Allowance korrekt berechnet wurde.
-
-    Du bekommst:
-    - Eine Zeitspanne (time_period_summary) im Format "YYYY-MM-DD – YYYY-MM-DD"
-    - Einen Tagessatz (daily_rate)
-    - Eine Allowance (extracted_allowance)
-
-    Aufgaben:
-    1. Berechne die Anzahl der Tage INKLUSIVE Start- und Enddatum.
-    2. Berechne expected_allowance = daily_rate * days.
-    3. Prüfe, ob expected_allowance und extracted_allowance übereinstimmen (Toleranz 0.01).
-
-    Gib ausschließlich folgendes JSON zurück:
-    {{"days": 0, "expected_allowance": 0.0, "matches_summary": true/false}}
-
-    time_period_summary: {time_period_summary}
-    daily_rate: {daily_rate}
-    extracted_allowance: {extracted_allowance}
-    """
-
-    structured_llm = llm.with_structured_output(AllowanceCalculation)
-    start = time.time()
-    result: AllowanceCalculation = structured_llm.invoke(prompt)
-    end = time.time()
-    print(f"⏱ LLM-Antwortzeit (AllowanceCalculation): {end - start:.2f} Sekunden")
+    logger.info("LLM latency (RateSelection): %.2fs", end - start)
 
     return result
 
@@ -274,11 +218,9 @@ def build_approval_decision_with_llm(
     total_ok: bool,
     ticket_exists: bool,
     allowance_calc: AllowanceCalculation,
-    dates_ok: bool,   
+    dates_ok: bool,
 ) -> ApprovalDecision:
-    """
-    Lässt das LLM anhand vierer bools entscheiden, ob ein Report approved oder rejected wird.
-    """
+    """Uses an LLM to decide whether the expense report should be approved or rejected and writes a comment."""
     llm = get_llm()
 
     prompt = f"""
@@ -305,8 +247,6 @@ def build_approval_decision_with_llm(
     start = time.time()
     decision: ApprovalDecision = structured_llm.invoke(prompt)
     end = time.time()
-    print(f"⏱ LLM-Antwortzeit (ApprovalDecision): {end - start:.2f} Sekunden")
+    logger.info("LLM latency (ApprovalDecision): %.2fs", end - start)
 
     return decision
-
-

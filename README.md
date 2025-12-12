@@ -18,12 +18,15 @@ The complete LangGraph workflow used to process a travel expense report:
 ![LangGraph Workflow](docs/graph.png)
 
 ## Requirements
+- Create a `.env` file (based on `.env.example`) and fill in the credentials provided via email.
 - Python 3.10+
 - Ollama running locally
+
+
 
 ## Setup
 ```bash
 pip install -r requirements.txt
 ollama pull llama3.2
-python main.py path/to/travel_expenses.pdf
+python main.py data/travel_expenses.pdf
 ```

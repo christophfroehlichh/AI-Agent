@@ -6,6 +6,8 @@ Validates CLI input and starts the LangGraph-based processing pipeline.
 import sys
 import logging
 from pathlib import Path
+from dotenv import load_dotenv
+load_dotenv()
 
 from agents.graph_workflow import run_workflow
 
